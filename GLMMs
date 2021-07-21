@@ -1,0 +1,301 @@
+day.night.data$smi <- list_ind$SMI[match(day.night.data$name, as.character(list_ind$Chip))]
+
+# Rescale the data if it is a percentage so the beta regression works.
+min_s <- min(day.night.data$social_differentiation, na.rm = T)
+max_s <- max(day.night.data$social_differentiation, na.rm = T)
+day.night.data$social_differentiation <- (day.night.data$social_differentiation - min_s)/(max_s - min_s)*100
+day.night.data$degree <- (day.night.data$degree/day.night.data$size_com)*100
+for (col in c(23, 25, 28)) {
+  day.night.data[,col] <- (day.night.data[,col] + 0.5) / 101
+}
+
+
+# Calculates daily variations
+sub.data <- day.night.data %>% 
+    group_by(name) %>% 
+    mutate(diff_deg = abs(degree - lag(degree, 1)),
+           diff_str = abs(strength - lag(strength, 1)),
+           diff_soc = abs(social_differentiation - lag(social_differentiation, 1)))
+           
+
+# Graph for pre-diagnostic (truncated data)
+sub.data <- sub.data[interaction(sub.data$date, sub.data$phase) %in% 
+                     interaction(levels$Var1[lines.bayes], levels$Var2[lines.bayes]),]
+hist(sub.data$diff_deg)
+hist(sub.data$diff_str)
+hist(sub.data$diff_soc)
+
+
+
+# Fitting the first ;odels on observed data
+# Time series of degree centrality
+mod.tmb.deg <- glmmTMB(diff_deg ~ 1 + sex + dominance + percent_female + size_com + phase + (1|canyon/name), 
+                    ziformula = ~ 1 + sex + size_com, 
+                    data = sub.data, 
+                   family = beta_family(link = "logit"))
+plot(DHARMa::simulateResiduals(mod.tmb.deg))
+tmb_w_test_deg   <- car::Anova(mod.tmb.deg, type = "II")
+tmb_confint_deg  <- confint(mod.tmb.deg, level = 0.95, method = "Wald")
+restab.tmb_deg   <- cbind.data.frame(
+                  summary(mod.tmb.deg)$coefficients$cond[,c("Estimate", "Std. Error")], 
+                  rbind(NA, as.data.frame(tmb_w_test_deg)),
+                  tmb_confint[rownames(tmb_confint_deg) %in% paste("cond.", rownames(summary(mod.tmb.deg)$coefficients$cond), sep = ""),],
+                  variable = c("(Intercept)", rownames(tmb_w_test_deg)),
+                  type = "obs",
+                  model = "degree")
+                  
+# Time series of strength centrality
+mod.tmb.str <- glmmTMB(diff_str ~ 1 + sex + dominance + percent_female + size_com + phase + (1|canyon/name), 
+                    ziformula = ~ 1 + sex + size_com, 
+                    data = sub.data, 
+                   family = beta_family(link = "logit"))
+plot(DHARMa::simulateResiduals(mod.tmb.str))
+tmb_w_test_str   <- car::Anova(mod.tmb.str, type = "II")
+tmb_confint_str  <- confint(mod.tmb.str, level = 0.95, method = "Wald")
+restab.tmb_str   <- cbind.data.frame(
+                  summary(mod.tmb.str)$coefficients$cond[,c("Estimate", "Std. Error")], 
+                  rbind(NA, as.data.frame(tmb_w_test_str)),
+                  tmb_confint[rownames(tmb_confint_str) %in% paste("cond.", rownames(summary(mod.tmb.str)$coefficients$cond), sep = ""),],
+                  variable = c("(Intercept)", rownames(tmb_w_test_str)),
+                  type = "obs",
+                  model = "strength")
+
+# Time series of scoial differentiation score
+mod.tmb.soc <- glmmTMB(diff_soc ~ 1 + sex + dominance + percent_female + size_com + phase + (1|canyon/name), 
+                    ziformula = ~ 1 + sex + size_com, 
+                    data = sub.data, 
+                   family = beta_family(link = "logit"))
+plot(DHARMa::simulateResiduals(mod.tmb.soc))
+tmb_w_test_soc   <- car::Anova(mod.tmb.soc, type = "II")
+tmb_confint_soc  <- confint(mod.tmb.soc, level = 0.95, method = "Wald")
+restab.tmb_soc   <- cbind.data.frame(
+                  summary(mod.tmb.soc)$coefficients$cond[,c("Estimate", "Std. Error")], 
+                  rbind(NA, as.data.frame(tmb_w_test_soc)),
+                  tmb_confint[rownames(tmb_confint_soc) %in% paste("cond.", rownames(summary(mod.tmb.soc)$coefficients$cond), sep = ""),],
+                  variable = c("(Intercept)", rownames(tmb_w_test_soc)),
+                  type = "obs",
+                  model = "social_differentiation")
+# Combine all datasets
+restab.tmb <- rbind.data.frame(restab.tmb_deg, restab.tmb_str, restab.tmb_soc)
+
+
+# Regression on permuted datasets using node-level permutations
+restab.r.tmb <- data.frame()
+perm1     <- 100
+sub.data1 <- as.data.frame(sub.data)
+for (beta in restab.tmb$variable) {
+  
+  # Finds the column to swap
+  if (!(beta %in% c("percent_female", "sex", "dominance", "smi", "phase", "size_com", "canyon"))) {
+    next
+  } else {
+    col <- match(beta, colnames(sub.data1))
+  }
+  if (beta %in% c("percent_female")) {
+    col <- match("sex", colnames(sub.data1))
+  }
+  
+  vect.r.tmb.deg <- c()
+  vect.r.tmb.str <- c()
+  vect.r.tmb.soc <- c()
+
+  for (pe0 in 1:perm1) {
+    
+    sub.data1 <- as.data.frame(sub.data)
+    for (pe in 1:perm1) {
+      
+      # For individual traits, swaps within daily communities (group traits remain constant)
+      # NB: for groups where there are only females, we cannot affect the sex of one individual
+      # without affecting group composition. In such cases, we accept that our data set does not
+      # carry enough variability to build a different null model.
+      if (beta %in% c("smi", "dominance")) {
+        for (c in 1:2) {
+          repeat {
+            # pick a date, a phase and a canyon
+            d.p   <- sample(x = unique(interaction(sub.data1$date, sub.data1$phase)), 1)
+            l.d.p <- which(interaction(sub.data1$date, sub.data1$phase)==d.p & sub.data1$canyon==c)
+        
+            # pick a community that day, phase and canyon
+            com.n <- sample(x = unique(sub.data1$id_num_com[l.d.p]), 1)
+            l.c.n <- l.d.p[(sub.data1$id_num_com[l.d.p]==com.n)]
+            if (length(l.c.n) >= 2) {break}
+          }
+          # picks two lines randomly and store the associated values into l.t.s
+          i.t.s <- sample(l.c.n, 2)
+          sub.data1 <- as.data.frame(sub.data1)
+          l.t.s <- sub.data1[i.t.s, col]
+          sub.data1[i.t.s[1], col] <- l.t.s[2]
+          sub.data1[i.t.s[2], col] <- l.t.s[1] 
+        }
+      }
+    
+      if (beta %in% c("sex")) {
+        for (c in 1:2) {
+          repeat {
+            # pick a date, a phase and a canyon
+            d.p   <- sample(x = unique(interaction(sub.data1$date, sub.data1$phase)), 1)
+            l.d.p <- which(interaction(sub.data1$date, sub.data1$phase)==d.p & sub.data1$canyon==c)
+        
+            # pick a community that day, phase and canyon
+            l.p.f <- l.d.p[!(sub.data1$percent_female[l.d.p]%in%c(0, 1))]
+            com.n <- sample(unique(sub.data1$id_num_com[l.p.f]), 1)
+            l.c.n <- l.p.f[(sub.data1$id_num_com[l.p.f]==com.n)]
+          
+            # pick one male and one female in on of the ID-ed communities
+            l.i.1 <- l.c.n[sub.data1$sex[l.c.n]==1]
+            l.i.2 <- l.c.n[sub.data1$sex[l.c.n]==2]
+      
+            # swaps the attribute of column 'col' between two individuals of that subset
+            if (length(l.i.1)>0 & length(l.i.2)>0) {break}
+          }
+          i.t.s <- c(sample(l.i.1, 1), sample(l.i.2, 1))
+          sub.data1 <- as.data.frame(sub.data1)
+          l.t.s <- sub.data1[i.t.s, col]
+          sub.data1[i.t.s[1], col] <- l.t.s[2]
+          sub.data1[i.t.s[2], col] <- l.t.s[1] 
+        }
+      }
+    
+      # For group traits, swaps an individual trait between daily communities 
+      # and then recalculates the group traits.
+      if (beta %in% c("percent_female", "size_com")) {
+        for (c in 1:2) {
+          repeat {
+            # pick a date, a phase and a canyon
+            d.p   <- sample(x = unique(interaction(sub.data1$date, sub.data1$phase)), 1)
+            l.d.p <- which(interaction(sub.data1$date, sub.data1$phase)==d.p & sub.data1$canyon==c)
+            if (length(l.d.p) >= 2) {break}
+          }
+          i.t.s <- sample(l.d.p, 2)
+          sub.data1 <- as.data.frame(sub.data1)
+          l.t.s <- sub.data1[i.t.s, col]
+          sub.data1[i.t.s[1], col] <- l.t.s[2]
+          sub.data1[i.t.s[2], col] <- l.t.s[1] 
+        }
+        sub.data1 <- sub.data1  %>% 
+          group_by(date, phase, canyon, id_num_com) %>% 
+          mutate(percent_female = table(sex)[1]/n())
+      }
+      
+      
+      # For temporal patterns, swaps the trait within individual ID.
+      # This way, everything is constant except for the change in sociality the 
+      # individual experiences on a given day/night transition.
+      if (beta %in% c("phase")) {
+        for (c in 1:2) {
+          stop_if <- 0
+          repeat {
+            l.d.p <- which(sub.data1$canyon==c)
+            i.i   <- sample(unique(sub.data1$name[l.d.p]), size = 1)
+            l.i.1 <- l.d.p[sub.data1$name[l.d.p]==i.i & sub.data1$phase[l.d.p]=="day"]
+            l.i.2 <- l.d.p[sub.data1$name[l.d.p]==i.i & sub.data1$phase[l.d.p]=="night"]
+            stop_if <- stop_if + 1
+            if (length(l.i.1)>0 & length(l.i.2)>0) {break}
+            if (stop_if == 1000) {break}
+          }
+          i.t.s <- c(sample(l.i.1, 1), sample(l.i.2, 1))
+          sub.data1 <- as.data.frame(sub.data1)
+          l.t.s <- sub.data1[i.t.s, col]
+          sub.data1[i.t.s[1], col] <- l.t.s[2]
+          sub.data1[i.t.s[2], col] <- l.t.s[1] 
+        }
+      }
+      
+      if (beta %in% c("canyon")) {
+        for (c in c(1:2)) {
+          stop_if <- 0
+          repeat {
+            l.i.1 <- which(sub.data1$sex==c & sub.data1$canyon==1)
+            l.i.2 <- which(sub.data1$sex==c & sub.data1$canyon==2)
+            stop_if <- stop_if + 1
+            if (length(l.i.1)>0 & length(l.i.2)>0) {break}
+            if (stop_if == 1000) {break}
+          }
+          i.t.s <- c(sample(l.i.1, 1), sample(l.i.2, 1))
+          sub.data1 <- as.data.frame(sub.data1)
+          l.t.s <- sub.data1[i.t.s, col]
+          sub.data1[i.t.s[1], col] <- l.t.s[2]
+          sub.data1[i.t.s[2], col] <- l.t.s[1] 
+        }
+      }
+      
+      # regression on Degree
+      mod.tmb.r.deg   <- glmmTMB(diff_deg ~ 1 + sex + dominance + percent_female + size_com + phase + (1|canyon/name), 
+                      ziformula = ~ 1 + sex + size_com, 
+                      data      = sub.data1, 
+                      family    = beta_family(link = "logit"))
+      coef.tmb.r.deg  <- summary(mod.tmb.r.deg)$coefficients$cond[,c("Estimate", "Std. Error")]
+      rownames(coef.tmb.r.deg) <- c("(Intercept)", rownames(car::Anova(mod.tmb.r.deg, type = "II")))
+      beta.r.tmb.deg  <- coef.tmb.r.deg[rownames(coef.tmb.r.deg)==beta, c("Estimate")]
+      vect.r.tmb.deg <- c(vect.r.tmb.deg, beta.r.tmb.deg)
+      
+      # regression on Strength
+      mod.tmb.r.str   <- glmmTMB(diff_str ~ 1 + sex + dominance + percent_female + size_com + phase + (1|canyon/name), 
+                      ziformula = ~ 1 + sex + size_com, 
+                      data      = sub.data1, 
+                      family    = beta_family(link = "logit"))
+      coef.tmb.r.str  <- summary(mod.tmb.r.str)$coefficients$cond[,c("Estimate", "Std. Error")]
+      rownames(coef.tmb.r.str) <- c("(Intercept)", rownames(car::Anova(mod.tmb.r.str, type = "II")))
+      beta.r.tmb.str  <- coef.tmb.r.str[rownames(coef.tmb.r.str)==beta, c("Estimate")]
+      vect.r.tmb.str <- c(vect.r.tmb.str, beta.r.tmb.str)
+      
+      # regression on Social Differentiation
+      mod.tmb.r.soc   <- glmmTMB(diff_soc ~ 1 + sex + dominance + percent_female + size_com + phase + (1|canyon/name), 
+                      ziformula = ~ 1 + sex + size_com, 
+                      data      = sub.data1, 
+                      family    = beta_family(link = "logit"))
+      coef.tmb.r.soc  <- summary(mod.tmb.r.soc)$coefficients$cond[,c("Estimate", "Std. Error")]
+      rownames(coef.tmb.r.soc) <- c("(Intercept)", rownames(car::Anova(mod.tmb.r.soc, type = "II")))
+      beta.r.tmb.soc  <- coef.tmb.r.soc[rownames(coef.tmb.r.soc)==beta, c("Estimate")]
+      vect.r.tmb.soc <- c(vect.r.tmb.soc, beta.r.tmb.soc)
+      
+      print(paste("variable: ", beta, " | permutation: ", pe0, "/",pe, sep = ""))
+      
+    }
+  }
+  
+  # Distribution of randomized regression coefficients & count p-value
+  beta.o.tmb.deg  <- restab.tmb$Estimate[restab.tmb$variable == beta & restab.tmb$model == "degree"]
+  quant.r.tmb.deg <- quantile(vect.r.tmb.deg, c(0.025, 0.08, 0.5, 0.92, 0.975))
+  pv.tmb.deg      <- length(vect.r.tmb.deg[beta.o.tmb.deg < vect.r.tmb.deg])
+  
+  beta.o.tmb.str  <- restab.tmb$Estimate[restab.tmb$variable == beta & restab.tmb$model == "strength"]
+  quant.r.tmb.str <- quantile(vect.r.tmb.str, c(0.025, 0.08, 0.5, 0.92, 0.975))
+  pv.tmb.str      <- length(vect.r.tmb.str[beta.o.tmb.str < vect.r.tmb.str])
+
+  beta.o.tmb.soc  <- restab.tmb$Estimate[restab.tmb$variable == beta & restab.tmb$model == "social_differentiation"]
+  quant.r.tmb.soc <- quantile(vect.r.tmb.soc, c(0.025, 0.08, 0.5, 0.92, 0.975))
+  pv.tmb.soc      <- length(vect.r.tmb.soc[beta.o.tmb.soc < vect.r.tmb.soc])
+  
+  # Data storage
+  restab.tmb$`P(obs!=perm)`[restab.tmb$variable==beta & restab.tmb$model == "degree"] <- pv.tmb.deg/(perm1*perm1)
+  restab.tmb$`P(obs!=perm)`[restab.tmb$variable==beta & restab.tmb$model == "strength"] <- pv.tmb.str/(perm1*perm1)
+  restab.tmb$`P(obs!=perm)`[restab.tmb$variable==beta & restab.tmb$model == "social_differentiation"] <- pv.tmb.soc/(perm1*perm1)
+  
+  restab.r.tmb <- rbind.data.frame(restab.r.tmb, 
+                                   data.frame(
+                                     Estimate  = c(
+                                       mean(vect.r.tmb.deg, na.rm = T),
+                                       mean(vect.r.tmb.str, na.rm = T),
+                                       mean(vect.r.tmb.soc, na.rm = T)),
+                                     SE   = c(
+                                       sd(vect.r.tmb.deg, na.rm = T)/sqrt(length(vect.r.tmb.deg)),
+                                       sd(vect.r.tmb.str, na.rm = T)/sqrt(length(vect.r.tmb.str)),
+                                       sd(vect.r.tmb.soc, na.rm = T)/sqrt(length(vect.r.tmb.soc))),
+                                     quant2.5  = c(
+                                       unname(quant.r.tmb.deg[1]),
+                                       unname(quant.r.tmb.str[1]),
+                                       unname(quant.r.tmb.soc[1])),
+                                     quant97.5 = c(
+                                       unname(quant.r.tmb.deg[5]),
+                                       unname(quant.r.tmb.str[5]),
+                                       unname(quant.r.tmb.soc[5])),
+                                     type      = "rand",
+                                     model     = c("degree", "strength", "social_differentiation"),
+                                     variable  = beta))
+
+}
+
+colnames(restab.tmb)[c(2,6,7)] <- c("SE", "quant2.5", "quant97.5")
+restab.f.tmb <- rbind.data.frame(restab.tmb[,c("Estimate", "SE", "quant2.5", "quant97.5", "type", "variable", "model")],
+                               restab.r.tmb[,c("Estimate", "SE", "quant2.5", "quant97.5", "type", "variable", "model")])
