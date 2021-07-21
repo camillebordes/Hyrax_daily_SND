@@ -60,7 +60,7 @@ library(cba) # version ‘0.2.15’
 exp_start   <- as.POSIXct("14-07-2017 06:00:00", format = "%d-%m-%Y %H:%M:%S")
 exp_end     <- as.POSIXct("10-08-2017 06:00:00", format = "%d-%m-%Y %H:%M:%S")
 
-LoggersBrut <- read.csv(file = paste0("~/Dropbox/Hyraxes/Projects/2019_Camille_Chu_ProximityData/01_DeployedLoggers.csv"), 
+LoggersBrut <- read.csv(file = paste0("~/01_DeployedLoggers.csv"), 
                         header = TRUE, 
                         sep = ";", 
                         na = c("","NA"))
@@ -74,12 +74,12 @@ list_ind             <- rbind(Trapped[data.table::between(exp_start, Trapped$Dat
                                  List[data.table::between(exp_start, List$Date_on,    List$Date_off),])
 list_ind             <- list_ind[!is.na(list_ind$Chip),]
 
-Contactlist          <- read.csv("~/Dropbox/Hyraxes/Projects/2019_Camille_Chu_ProximityData/05_Contactlist.csv", header = T, sep = ",")
+Contactlist          <- read.csv("~/ContactList_2017.csv", header = T, sep = ",")
 Contactlist$interval <- as.POSIXct(strptime(as.character(Contactlist$interval), format = "%Y-%m-%d %H:%M:%S"))
 Contactlist$start    <- as.POSIXct(strptime(as.character(Contactlist$start),    format = "%Y-%m-%d %H:%M:%S"))
 Contactlist$date     <- as.POSIXct(strptime(as.character(Contactlist$date),     format = "%Y-%m-%d"))
 
-dyads_list           <- read.csv("~/Dropbox/Hyraxes/Projects/2019_Camille_Chu_ProximityData/03_Dyads.csv", header = T, sep = ",")
+dyads_list           <- read.csv("~/03_Dyads.csv", header = T, sep = ",")
 dyads_list           <- dyads_list[dyads_list$deployment==year(exp_start) & dyads_list$retreived=="2_logger",]
 li_f                 <- c()
 for (day in unique(Contactlist$date)) {
