@@ -1,0 +1,232 @@
+data.day <- subset(TimeEdgelist, day_phase %in% c("morning","afternoon"))
+data.nig <- subset(TimeEdgelist, day_phase %in% c("night"))
+dates    <- levels(as.factor(c(data.day$date, data.nig$date)))
+perm     <- 1000
+
+for (i in dates) {
+  
+  # Select the lines for day network and night network that day
+  i  <- as.POSIXct(i, format = "%Y-%m-%d")
+  d  <- which(data.day$date == i)
+  n1 <- intersect(which(data.nig$date==i),         which(data.nig$hour>12))
+  n2 <- intersect(which(data.nig$date==i+days(1)), which(data.nig$hour<12))
+  
+  # Observed lists of interactions
+  list_day   <- data.day[d,]
+  list_night <- data.nig[c(n1,n2),]
+  
+  # Creation of the permuted networks
+  repeat {
+    net_day    <- randomize_within_list(list_day,   perm, list_ind)
+    test       <- apply(net_day, 1, sum)
+    if ( !(0%in%test) ) {break;} 
+  }
+  repeat {
+    net_night  <- randomize_within_list(list_night, perm, list_ind)
+    test       <- apply(net_night, 1, sum)
+    if ( !(0%in%test) ) {break;}
+  }
+  
+  # To binarize social networks run these two lines in each loop
+   net_day[net_day!=0] <- 1
+   net_night[net_night!=0] <- 1
+  
+  if (i == dates[1]) {
+    Nets.mosaic <- Abind(net_day, net_night, along = 1)
+    names.dim <- c(as.POSIXct(i + dhours(11)), as.POSIXct(i + dhours(23)))
+  } else {
+    Nets.mosaic <- Abind(Abind(Nets.mosaic, net_day, along = 1), net_night, along = 1)
+    names.dim <- c(names.dim, c(as.POSIXct(i + dhours(11)), as.POSIXct(i + dhours(23))))
+  }
+  names.dim
+  
+}
+
+# Calculates network similarity between all potential pairs of networks
+can <- unique(list_ind$Canyon)[1]
+m <- 1
+
+for (k in seq(1, dim(Nets.mosaic)[1]-2001, 1001)) {
+  
+  n <- m + 1
+  
+  for (l in seq(k+1001, dim(Nets.mosaic)[1]-1000, 1001)) {
+    
+    #for (can in unique(list_ind$Canyon)) {
+      
+      #nam_can <- list_ind$Chip[which(list_ind$Canyon == can)]
+      #lin_can <- which(dimnames(Nets.mosaic)[[2]] %in% as.character(nam_can))
+    
+      invisible(capture.output(A <- lowerMat(Nets.mosaic[k,,])))
+      invisible(capture.output(B <- lowerMat(Nets.mosaic[l,,])))
+      r <- ecodist::mantel(A ~ B)[1]
+      s <- lsa::cosine(A, B)
+    
+      t1 <- 0
+      t2 <- 0
+      for (p in 1:1000) {
+        invisible(capture.output(A <- lowerMat(Nets.mosaic[k+p,,])))
+        invisible(capture.output(B <- lowerMat(Nets.mosaic[l+p,,])))
+        u <- ecodist::mantel(A ~ B)[1]
+        v <- lsa::cosine(A, B)
+        if (u < r) {t1 <- t1+1}
+        if (v < s) {t2 <- t2+1}
+      }
+    
+      if (m == 1 & n == 2 & can == unique(list_ind$Canyon)[1]) {
+        mosaic.data <- data.frame(X = names.dim[m],
+                                  Y = names.dim[n],
+                                  Site     = can,
+                                  R.mantel = r,
+                                  P.mantel = t1/1000,
+                                  R.cosine = s,
+                                  P.cosine = t2/1000)
+      } else {
+        mosaic.data <- rbind.data.frame(mosaic.data,
+                       data.frame(X = names.dim[m],
+                                  Y = names.dim[n],
+                                  Site     = can,
+                                  R.mantel = r,
+                                  P.mantel = t1/1000,
+                                  R.cosine = s,
+                                  P.cosine = t2/1000))
+      }
+    
+    #}
+    
+    n <- n + 1
+    
+  }
+  
+  print(paste0("You have completed ", m, " date(s) out of 54."))
+  m <- m + 1
+  
+}
+
+mosaic.data2 <- rbind.data.frame(mosaic.data,
+                      data.frame(X = mosaic.data[,2],
+                                 Y = mosaic.data[,1],
+                                 Site     = mosaic.data[,3],
+                                 R.mantel = mosaic.data[,4],
+                                 P.mantel = mosaic.data[,5],
+                                 R.cosine = mosaic.data[,6],
+                                 P.cosine = mosaic.data[,7]))
+                                 
+                                 
+                                 
+                                 
+                                 
+mosaic.data5 <- mosaic.data2
+# a) transform one-sided p-values
+mosaic.data5$P.transform <- mosaic.data5$P.cosine
+mosaic.data5$P.transform[mosaic.data5$P.cosine>0.5] <- 1 - mosaic.data5$P.transform
+
+# b) adjust transformed lower-tailed p-values
+mosaic.data5$P.adjust <- stats::p.adjust(mosaic.data5$P.transform, method = "fdr")
+
+# c) impose adequate color-coding
+mosaic.data5$class <- "white"
+mosaic.data5$class[mosaic.data5$P.adjust<0.05 & mosaic.data5$P.cosine<0.5] <- "cornflowerblue"
+mosaic.data5$class[mosaic.data5$P.adjust<0.05 & mosaic.data5$P.cosine>0.5] <- "tomato"
+
+b <- ggplotGrob(ggplot(mosaic.data2, 
+                       aes(x    = Y, 
+                           y    = X, 
+                           fill = R.cosine)) + 
+  geom_tile() +
+  scale_fill_gradient2(low      = "cornflowerblue", 
+                       high     = "tomato", 
+                       mid      = "lightyellow", 
+                       na.value = "white",
+                       midpoint = mean( mosaic.data2$R.cosine, na.rm = T), 
+                       limit    = c(min(mosaic.data2$R.cosine, na.rm = T), 
+                                    max(mosaic.data2$R.cosine, na.rm = T)),
+                       labels   = c("0", "", "0.4", "", "0.6"),
+                       space    = "Lab",
+                       name     = "Color scale") +
+  geom_text(aes(x     = Y, 
+                y     = X, 
+                label = ""), 
+            color = "black", 
+            size  = 1) +
+  coord_fixed() +
+  theme_few() +  
+  theme(
+    plot.title          = element_text(hjust = 0.5,
+                                       size = 20),
+    axis.text.x         = element_text(angle = 45, 
+                                     vjust = 1, 
+                                     size  = 18, 
+                                     hjust = 1,
+                                     color = "black"),
+    axis.text.y         = element_text(angle = 0, 
+                                     vjust = 1, 
+                                     size  = 18, 
+                                     hjust = 1,
+                                     color = "black"),
+    axis.title.x         = element_blank(),
+    axis.title.y         = element_blank(),
+    panel.grid.major     = element_blank(),
+    panel.border         = element_blank(),
+    panel.background     = element_blank(),
+    axis.ticks           = element_blank(),
+    legend.justification = c(1, 0),
+    legend.direction     = "horizontal",
+    legend.position      = "bottom",
+    legend.text          = element_text(size = 14),
+    legend.title         = element_text(size  = 18)) +
+  guides(fill = guide_colorbar(barwidth       = 7, 
+                               barheight      = 1,
+                               title.position = "top",
+                               title.hjust    = 0.5)) +
+  ggtitle("Cosine similarity indexes"))
+
+
+
+c <- ggplotGrob(ggplot(mosaic.data5, 
+                       aes(x    = Y, 
+                           y    = X, 
+                           fill = class)) + 
+  geom_tile() +
+  scale_fill_manual(breaks = c("cornflowerblue", "tomato", "white"),
+                    values = c("cornflowerblue", "tomato", "white"),
+                    labels = c("Lower", 
+                               "Higher",
+                               "Non significant"),
+                    name = "Comparison to the null hypothesis") +
+  geom_text(aes(x     = Y, 
+                y     = X, 
+                label = ""), 
+            color = "black", 
+            size  = 1) +
+  coord_fixed() +
+  theme_few() +
+  theme(
+    plot.title          = element_text(hjust = 0.5,
+                                       size  = 20),
+    axis.text.x         = element_text(angle = 45, 
+                                     vjust = 1, 
+                                     size  = 18, 
+                                     hjust = 1,
+                                     color = "black"),
+    axis.text.y         = element_text(angle = 0, 
+                                     vjust = 1, 
+                                     size  = 18, 
+                                     hjust = 1,
+                                     color = "white"),
+    axis.title.x         = element_blank(),
+    axis.title.y         = element_blank(),
+    panel.grid.major     = element_blank(),
+    panel.border         = element_blank(),
+    panel.background     = element_blank(),
+    axis.ticks           = element_blank(),
+    legend.justification = c(1, 0),
+    legend.direction     = "vertical",
+    legend.position      = "bottom",
+    legend.text          = element_text(size = 14),
+    legend.title         = element_text(size  = 18)) +
+    guides(fill = guide_legend(title.position = "top",
+                               title.hjust    = 0.5)) +
+  ggtitle("Associated p-values"))
+
+ggarrange(b, c, ncol = 2, nrow = 1)
