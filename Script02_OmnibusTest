@@ -1,0 +1,48 @@
+# Meta-analysis of daily day/night contrast
+Diff <- day.night.diff.omni
+Diff$p.rand.inf[Diff$p.rand.inf==0] <- 2e-16
+Diff$p.rand.sup[Diff$p.rand.sup==0] <- 2e-16
+Diff$p.rand.inf[is.na(Diff$value)]  <- NA
+Diff$p.rand.sup[is.na(Diff$value)]  <- NA
+
+# If you want to mix all transitions (without discriminating between mornings and afternoons)
+Omnibus_bis <- data.frame(measure     = unique(Diff$measure),
+                          mean_var    = NA,
+                          sd_var      = NA,
+                          p_value_inf = NA,
+                          p_value_sup = NA,
+                          alpha       = NA)
+
+# If you want to refine the analysis by discriminating between monring and afternoons
+#Omnibus_bis <- data.frame(measure     = rep(unique(Diff$measure), 2),
+#                          start.pt    = c(rep("day", 19), rep("night", 19)),
+#                          mean_var    = NA,
+#                          sd_var      = NA,
+#                          p_value_inf = NA,
+#                          p_value_sup = NA,
+#                          alpha       = NA)
+# dnd <- as.data.frame(day.night.data[1,,])
+
+for (i in 1:nrow(Omnibus_bis)) {
+  p1 <- c()
+  p2 <- c()
+  va <- c()
+  L  <- 1
+  for (j in 1:nrow(Diff)) {
+    if (Diff$measure[j]==Omnibus_bis$measure[i]) {
+      #if (Diff$point1[j]==Omnibus_bis$start.pt[i]) {
+        va <- c(va, Diff$value[j])
+        if (!is.na(Diff$p.rand.inf[j])) {p1 <- c(p1, Diff$p.rand.inf[j])}
+        if (!is.na(Diff$p.rand.sup[j])) {p2 <- c(p2, Diff$p.rand.sup[j])}
+      #}
+    }
+  }
+  
+  # Dependent p-value
+  Omnibus_bis$p_value_inf[i] <- CombinePValue::competitive.test(p1, Weight = NA)
+  Omnibus_bis$p_value_sup[i] <- CombinePValue::competitive.test(p2, Weight = NA)
+  
+  
+  Omnibus_bis$mean_var[i] <- mean(va, na.rm = T) %>% round(digits = 4)
+  Omnibus_bis$sd_var[i]   <- sd(va, na.rm = T) %>% round(digits = 4)
+}
